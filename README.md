@@ -1,3 +1,5 @@
+`Gno.land` · `Smart Contracts` · `Infrastructure`
+
 # service_registry
 
 On-chain service discovery for Gno.land.
@@ -135,5 +137,20 @@ gnokey query vm/qeval --data 'gno.land/r/service_registry.GetService("my_token")
 ```
 
 Visit `/r/service_registry` on any Gno.land node to browse all registered services.
+
+## Stack
+
+- [Gno](https://gno.land) — Go-like smart contract language
+- [Gno.land](https://gno.land) — Layer 1 blockchain
+
+## Part of the Gno Infrastructure Stack
+
+| Realm | Layer |
+|-------|-------|
+| [fee_split](https://github.com/SillyZir/fee-split) | Revenue & value flow |
+| [permission_registry](https://github.com/SillyZir/permission_registry) | Access control |
+| **service_registry** | **Discovery** |
+| [upgrade_registry](https://github.com/SillyZir/upgrade_registry) | Upgrade tracking |
+| [timelock_guardian](https://github.com/SillyZir/timelock_guardian) | Security |
 
 ---
