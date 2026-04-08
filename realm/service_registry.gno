@@ -34,7 +34,7 @@ func caller() std.Address {
 // RegisterService adds a new service to the registry. The caller becomes
 // the owner. Name must be unique, non-empty, and alphanumeric with
 // underscores (a simple namespace to prevent collisions).
-func RegisterService(cross realm, name, description, serviceType, metadata string) {
+func RegisterService(_ realm, name, description, serviceType, metadata string) {
 	if name == "" {
 		panic("name must not be empty")
 	}
@@ -63,7 +63,7 @@ func RegisterService(cross realm, name, description, serviceType, metadata strin
 
 // UpdateService modifies a service's description, type, and metadata.
 // Only the registered owner can update. Name cannot be changed.
-func UpdateService(cross realm, name, description, serviceType, metadata string) {
+func UpdateService(_ realm, name, description, serviceType, metadata string) {
 	svc := mustGet(name)
 	if caller() != svc.Owner {
 		panic("only the owner can update this service")
@@ -81,7 +81,7 @@ func UpdateService(cross realm, name, description, serviceType, metadata string)
 }
 
 // TransferOwnership hands control of a service entry to a new address.
-func TransferOwnership(cross realm, name string, newOwner std.Address) {
+func TransferOwnership(_ realm, name string, newOwner std.Address) {
 	svc := mustGet(name)
 	if caller() != svc.Owner {
 		panic("only the owner can transfer ownership")
@@ -94,7 +94,7 @@ func TransferOwnership(cross realm, name string, newOwner std.Address) {
 
 // Deregister removes a service from the registry permanently.
 // Only the owner can deregister.
-func Deregister(cross realm, name string) {
+func Deregister(_ realm, name string) {
 	svc := mustGet(name)
 	if caller() != svc.Owner {
 		panic("only the owner can deregister")
