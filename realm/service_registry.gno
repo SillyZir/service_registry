@@ -4,16 +4,29 @@ import (
 	"chain/runtime"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Service represents a registered on-chain service.
 type Service struct {
 	Name        string
 	Owner       address
-	PkgPath     string // the realm the service lives at — what integrators resolve
+	Registrant  address // ORIGINAL registrant; immutable through transfers
+	PkgPath     string  // the realm the service lives at — what integrators resolve
 	Description string
 	ServiceType string // e.g. "token", "dex", "oracle", "dao", "nft", "bridge"
 	Metadata    string // freeform key=value pairs or JSON blob
+}
+
+// Reservation holds a deregistered name for its former owner AND its
+// original registrant, and EXPIRES (re-audit 2026-09-02): an eternal
+// reservation let an attacker cycle register/deregister to lock the
+// whole namespace forever, and a hostile transferee could strand a
+// name against its original registrant permanently.
+type Reservation struct {
+	Owner      address
+	Registrant address
+	Expires    time.Time
 }
 
 const (
@@ -25,21 +38,24 @@ const (
 	MaxMetadataLen    = 2000
 
 	pkgPathPrefix = "gno.land/"
+
+	// ReservationPeriod is how long a deregistered name stays reserved.
+	// Long enough for integrators to notice the deregistration; finite
+	// so tombstones cannot lock the namespace forever.
+	ReservationPeriod = int64(90 * 24 * 3600) // 90 days
 )
 
 var (
 	services map[string]*Service
 	names    []string // insertion-ordered list for deterministic iteration
-	// retired maps a deregistered name to its last owner. Only that owner
-	// may re-register the name: a freed name must not be squattable by
-	// the fastest attacker while integrators still resolve it.
-	retired map[string]address
+	// retired maps a deregistered name to its time-bounded reservation.
+	retired map[string]*Reservation
 )
 
 func init() {
 	services = make(map[string]*Service)
 	names = []string{}
-	retired = make(map[string]address)
+	retired = make(map[string]*Reservation)
 }
 
 func caller() address {
@@ -67,13 +83,27 @@ func validatePkgPath(pkgPath string) {
 	if len(pkgPath) > MaxPkgPathLen {
 		panic("pkgpath exceeds " + strconv.Itoa(MaxPkgPathLen) + " chars")
 	}
-	if !strings.HasPrefix(pkgPath, pkgPathPrefix) || len(pkgPath) == len(pkgPathPrefix) {
+	if !strings.HasPrefix(pkgPath, pkgPathPrefix) {
 		panic("pkgpath must start with " + pkgPathPrefix + " and name a package")
 	}
-	for _, c := range pkgPath {
-		if !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
-			c == '_' || c == '/' || c == '.' || c == '-') {
-			panic("pkgpath contains invalid character: " + string(c))
+	// structural, per-element validation (re-audit: the old charset check
+	// accepted "..", "//", trailing slashes, hyphens, and non-r/p roots —
+	// all lookalike-squat or allowlist-bypass material)
+	elems := strings.Split(pkgPath[len(pkgPathPrefix):], "/")
+	if len(elems) < 2 || (elems[0] != "r" && elems[0] != "p") {
+		panic("pkgpath must be gno.land/r/... or gno.land/p/...")
+	}
+	for _, e := range elems[1:] {
+		if e == "" {
+			panic("pkgpath contains an empty element")
+		}
+		if !(e[0] >= 'a' && e[0] <= 'z') {
+			panic("invalid pkgpath element: " + e)
+		}
+		for _, c := range e {
+			if !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_') {
+				panic("invalid pkgpath element: " + e)
+			}
 		}
 	}
 }
@@ -142,8 +172,11 @@ func RegisterService(_ realm, name, pkgPath, description, serviceType, metadata 
 	if _, exists := services[name]; exists {
 		panic("service already registered: " + name)
 	}
-	if prev, wasRetired := retired[name]; wasRetired && prev != caller() {
-		panic("name is reserved for its former owner: " + name)
+	if res, wasRetired := retired[name]; wasRetired {
+		c := caller()
+		if c != res.Owner && c != res.Registrant && !time.Now().After(res.Expires) {
+			panic("name is reserved for its former owner: " + name)
+		}
 	}
 	if len(services) >= MaxServices {
 		panic("global service limit reached")
@@ -152,6 +185,7 @@ func RegisterService(_ realm, name, pkgPath, description, serviceType, metadata 
 	services[name] = &Service{
 		Name:        name,
 		Owner:       caller(),
+		Registrant:  caller(),
 		PkgPath:     pkgPath,
 		Description: description,
 		ServiceType: serviceType,
@@ -198,7 +232,11 @@ func Deregister(_ realm, name string) {
 	if caller() != svc.Owner {
 		panic("only the owner can deregister")
 	}
-	retired[name] = svc.Owner
+	retired[name] = &Reservation{
+		Owner:      svc.Owner,
+		Registrant: svc.Registrant,
+		Expires:    time.Now().Add(time.Duration(ReservationPeriod) * time.Second),
+	}
 	delete(services, name)
 
 	// Remove from ordered list
@@ -217,6 +255,17 @@ func Deregister(_ realm, name string) {
 // silently integrate against a missing entry.
 func Resolve(name string) string {
 	return mustGet(name).PkgPath
+}
+
+// TryResolve is the non-panicking variant for consumers that need to
+// degrade gracefully when a name disappears (re-audit: a panicking-only
+// read path bricks any consumer realm that calls it inline).
+func TryResolve(name string) (string, bool) {
+	svc, ok := services[name]
+	if !ok {
+		return "", false
+	}
+	return svc.PkgPath, true
 }
 
 // GetOwner returns the owner address of a service.
