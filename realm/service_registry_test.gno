@@ -314,3 +314,39 @@ func TestTryResolve(cur realm, t *testing.T) {
 	_, ok = TryResolve("ghost")
 	uassert.False(t, ok, "unknown name must return ok=false, never panic")
 }
+
+// ---------- round-3 audit regressions (2026-09-02) ----------
+
+func TestReservation_RegistrantSurvivesHostileRecycle(cur realm, t *testing.T) {
+	resetState()
+	register("price_oracle")
+
+	// round-3 P2: hostile transferee deregisters and INSTANTLY
+	// re-registers — the original registrant must survive the recycle
+	testing.SetRealm(testing.NewUserRealm(owner))
+	TransferOwnership(cross, "price_oracle", attacker)
+	testing.SetRealm(testing.NewUserRealm(attacker))
+	Deregister(cross, "price_oracle")
+	RegisterService(cross, "price_oracle", "gno.land/r/evil/oracle", "mine", "oracle", "")
+	uassert.Equal(t, string(owner), string(services["price_oracle"].Registrant),
+		"in-window re-register must preserve the original registrant")
+
+	// so when the attacker abandons again, the original can still reclaim
+	Deregister(cross, "price_oracle")
+	testing.SetRealm(testing.NewUserRealm(owner))
+	RegisterService(cross, "price_oracle", goodPath, "reclaimed", "oracle", "")
+	uassert.Equal(t, string(owner), string(services["price_oracle"].Owner))
+}
+
+func TestPkgPath_PinnedBehaviors(cur realm, t *testing.T) {
+	resetState()
+	testing.SetRealm(testing.NewUserRealm(owner))
+
+	// round-3 pins: top-level realm path accepted; digit-leading element
+	// and uppercase prefix rejected
+	RegisterService(cross, "toplevel", "gno.land/r/x", "d", "oracle", "")
+	uassert.AbortsContains(t, "invalid pkgpath element",
+		func() { RegisterService(cross, "digits", "gno.land/r/9abc", "d", "oracle", "") })
+	uassert.AbortsContains(t, "pkgpath must start with",
+		func() { RegisterService(cross, "upper", "GNO.LAND/r/demo/x", "d", "oracle", "") })
+}

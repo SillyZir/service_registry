@@ -172,10 +172,19 @@ func RegisterService(_ realm, name, pkgPath, description, serviceType, metadata 
 	if _, exists := services[name]; exists {
 		panic("service already registered: " + name)
 	}
+	registrant := caller()
 	if res, wasRetired := retired[name]; wasRetired {
 		c := caller()
-		if c != res.Owner && c != res.Registrant && !time.Now().After(res.Expires) {
+		inWindow := !time.Now().After(res.Expires)
+		if c != res.Owner && c != res.Registrant && inWindow {
 			panic("name is reserved for its former owner: " + name)
+		}
+		// round-3 audit: an in-window re-register must PRESERVE the
+		// original registrant — otherwise a hostile transferee could
+		// deregister and instantly re-register, stamping themselves as
+		// registrant and erasing the original project's reclaim right
+		if inWindow && res.Registrant != "" {
+			registrant = res.Registrant
 		}
 	}
 	if len(services) >= MaxServices {
@@ -185,7 +194,7 @@ func RegisterService(_ realm, name, pkgPath, description, serviceType, metadata 
 	services[name] = &Service{
 		Name:        name,
 		Owner:       caller(),
-		Registrant:  caller(),
+		Registrant:  registrant,
 		PkgPath:     pkgPath,
 		Description: description,
 		ServiceType: serviceType,
