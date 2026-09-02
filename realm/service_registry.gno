@@ -1,7 +1,7 @@
 package service_registry
 
 import (
-	"std"
+	"chain/runtime"
 	"strconv"
 	"strings"
 )
@@ -9,96 +9,196 @@ import (
 // Service represents a registered on-chain service.
 type Service struct {
 	Name        string
-	Owner       std.Address
+	Owner       address
+	PkgPath     string // the realm the service lives at — what integrators resolve
 	Description string
 	ServiceType string // e.g. "token", "dex", "oracle", "dao", "nft", "bridge"
 	Metadata    string // freeform key=value pairs or JSON blob
 }
 
+const (
+	MaxServices       = 500
+	MaxNameLen        = 64
+	MaxTypeLen        = 32
+	MaxPkgPathLen     = 128
+	MaxDescriptionLen = 500
+	MaxMetadataLen    = 2000
+
+	pkgPathPrefix = "gno.land/"
+)
+
 var (
 	services map[string]*Service
 	names    []string // insertion-ordered list for deterministic iteration
+	// retired maps a deregistered name to its last owner. Only that owner
+	// may re-register the name: a freed name must not be squattable by
+	// the fastest attacker while integrators still resolve it.
+	retired map[string]address
 )
 
 func init() {
 	services = make(map[string]*Service)
 	names = []string{}
+	retired = make(map[string]address)
 }
 
-func caller() std.Address {
-	return std.PreviousRealm().Address()
+func caller() address {
+	return runtime.PreviousRealm().Address()
+}
+
+// ---------- validation helpers ----------
+
+func isValidName(name string) bool {
+	if name == "" || len(name) > MaxNameLen {
+		return false
+	}
+	for _, c := range name {
+		if !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_') {
+			return false
+		}
+	}
+	return true
+}
+
+func validatePkgPath(pkgPath string) {
+	if pkgPath == "" {
+		panic("pkgpath must not be empty")
+	}
+	if len(pkgPath) > MaxPkgPathLen {
+		panic("pkgpath exceeds " + strconv.Itoa(MaxPkgPathLen) + " chars")
+	}
+	if !strings.HasPrefix(pkgPath, pkgPathPrefix) || len(pkgPath) == len(pkgPathPrefix) {
+		panic("pkgpath must start with " + pkgPathPrefix + " and name a package")
+	}
+	for _, c := range pkgPath {
+		if !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+			c == '_' || c == '/' || c == '.' || c == '-') {
+			panic("pkgpath contains invalid character: " + string(c))
+		}
+	}
+}
+
+func validateFields(description, serviceType, metadata string) {
+	if description == "" {
+		panic("description must not be empty")
+	}
+	if len(description) > MaxDescriptionLen {
+		panic("description exceeds " + strconv.Itoa(MaxDescriptionLen) + " chars")
+	}
+	if serviceType == "" {
+		panic("service type must not be empty")
+	}
+	if len(serviceType) > MaxTypeLen || !isValidName(serviceType) {
+		panic("service type must be lowercase alphanumeric with underscores, max " +
+			strconv.Itoa(MaxTypeLen) + " chars")
+	}
+	if len(metadata) > MaxMetadataLen {
+		panic("metadata exceeds " + strconv.Itoa(MaxMetadataLen) + " chars")
+	}
+}
+
+// sanitize makes attacker-controlled text safe to embed in markdown
+// tables and single-line summaries.
+func sanitize(s string) string {
+	s = strings.ReplaceAll(s, "`", "'")
+	s = strings.ReplaceAll(s, "|", "/")
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\r", " ")
+	return s
+}
+
+// truncate shortens s to at most n runes without splitting a multibyte
+// character.
+func truncate(s string, n int) string {
+	runes := []rune(s)
+	if len(runes) <= n {
+		return s
+	}
+	return string(runes[:n-3]) + "..."
+}
+
+func mustGet(name string) *Service {
+	svc, ok := services[name]
+	if !ok {
+		panic("service not found: " + name)
+	}
+	return svc
 }
 
 // ---------- write operations ----------
 
 // RegisterService adds a new service to the registry. The caller becomes
-// the owner. Name must be unique, non-empty, and alphanumeric with
-// underscores (a simple namespace to prevent collisions).
-func RegisterService(_ realm, name, description, serviceType, metadata string) {
-	if name == "" {
-		panic("name must not be empty")
-	}
+// the owner. Name must be unique, lowercase alphanumeric/underscores.
+// pkgPath is the realm the service lives at — the field integrators
+// resolve — and must look like a gno.land package path. A name that was
+// deregistered stays reserved for its former owner.
+func RegisterService(_ realm, name, pkgPath, description, serviceType, metadata string) {
 	if !isValidName(name) {
-		panic("name must be lowercase alphanumeric with underscores only")
+		panic("name must be 1-" + strconv.Itoa(MaxNameLen) +
+			" chars, lowercase alphanumeric with underscores only")
 	}
-	if description == "" {
-		panic("description must not be empty")
-	}
-	if serviceType == "" {
-		panic("service type must not be empty")
-	}
+	validatePkgPath(pkgPath)
+	validateFields(description, serviceType, metadata)
 	if _, exists := services[name]; exists {
 		panic("service already registered: " + name)
+	}
+	if prev, wasRetired := retired[name]; wasRetired && prev != caller() {
+		panic("name is reserved for its former owner: " + name)
+	}
+	if len(services) >= MaxServices {
+		panic("global service limit reached")
 	}
 
 	services[name] = &Service{
 		Name:        name,
 		Owner:       caller(),
+		PkgPath:     pkgPath,
 		Description: description,
 		ServiceType: serviceType,
 		Metadata:    metadata,
 	}
 	names = append(names, name)
+	delete(retired, name)
 }
 
-// UpdateService modifies a service's description, type, and metadata.
-// Only the registered owner can update. Name cannot be changed.
-func UpdateService(_ realm, name, description, serviceType, metadata string) {
+// UpdateService modifies a service's pkgpath, description, type, and
+// metadata. Only the registered owner can update. Name cannot change.
+func UpdateService(_ realm, name, pkgPath, description, serviceType, metadata string) {
 	svc := mustGet(name)
 	if caller() != svc.Owner {
 		panic("only the owner can update this service")
 	}
-	if description == "" {
-		panic("description must not be empty")
-	}
-	if serviceType == "" {
-		panic("service type must not be empty")
-	}
+	validatePkgPath(pkgPath)
+	validateFields(description, serviceType, metadata)
 
+	svc.PkgPath = pkgPath
 	svc.Description = description
 	svc.ServiceType = serviceType
 	svc.Metadata = metadata
 }
 
 // TransferOwnership hands control of a service entry to a new address.
-func TransferOwnership(_ realm, name string, newOwner std.Address) {
+func TransferOwnership(_ realm, name string, newOwner address) {
 	svc := mustGet(name)
 	if caller() != svc.Owner {
 		panic("only the owner can transfer ownership")
 	}
-	if newOwner == "" {
-		panic("new owner must not be empty")
+	if newOwner == "" || !newOwner.IsValid() {
+		panic("invalid new owner address: " + string(newOwner))
 	}
 	svc.Owner = newOwner
 }
 
-// Deregister removes a service from the registry permanently.
-// Only the owner can deregister.
+// Deregister removes a service from the registry. Only the owner can
+// deregister. The name stays reserved for the owner — it cannot be
+// re-registered by anyone else, so integrators who still resolve it
+// can never be redirected by a squatter.
 func Deregister(_ realm, name string) {
 	svc := mustGet(name)
 	if caller() != svc.Owner {
 		panic("only the owner can deregister")
 	}
+	retired[name] = svc.Owner
 	delete(services, name)
 
 	// Remove from ordered list
@@ -112,6 +212,18 @@ func Deregister(_ realm, name string) {
 
 // ---------- read-only queries ----------
 
+// Resolve returns the pkgpath a service name points to — the primary
+// integration query. Panics on unknown names so a consumer can never
+// silently integrate against a missing entry.
+func Resolve(name string) string {
+	return mustGet(name).PkgPath
+}
+
+// GetOwner returns the owner address of a service.
+func GetOwner(name string) address {
+	return mustGet(name).Owner
+}
+
 // GetService returns a formatted summary of a registered service.
 func GetService(name string) string {
 	svc := mustGet(name)
@@ -119,10 +231,11 @@ func GetService(name string) string {
 	var b strings.Builder
 	b.WriteString("Name: " + svc.Name + "\n")
 	b.WriteString("Owner: " + string(svc.Owner) + "\n")
+	b.WriteString("PkgPath: " + svc.PkgPath + "\n")
 	b.WriteString("Type: " + svc.ServiceType + "\n")
-	b.WriteString("Description: " + svc.Description + "\n")
+	b.WriteString("Description: " + sanitize(svc.Description) + "\n")
 	if svc.Metadata != "" {
-		b.WriteString("Metadata: " + svc.Metadata + "\n")
+		b.WriteString("Metadata: " + sanitize(svc.Metadata) + "\n")
 	}
 	return b.String()
 }
@@ -163,40 +276,19 @@ func Render(path string) string {
 	b.WriteString("# Service Registry\n\n")
 	b.WriteString("**Total services:** " + strconv.Itoa(len(services)) + "\n\n")
 
-	b.WriteString("| Name | Type | Owner | Description |\n")
-	b.WriteString("|------|------|-------|-------------|\n")
+	b.WriteString("| Name | Type | PkgPath | Owner | Description |\n")
+	b.WriteString("|------|------|---------|-------|-------------|\n")
 
 	for _, name := range names {
 		svc := services[name]
 		if svc == nil {
 			continue
 		}
-		desc := svc.Description
-		if len(desc) > 60 {
-			desc = desc[:57] + "..."
-		}
-		b.WriteString("| " + svc.Name + " | " + svc.ServiceType + " | `" + string(svc.Owner) + "` | " + desc + " |\n")
+		desc := truncate(sanitize(svc.Description), 60)
+		b.WriteString("| " + svc.Name + " | " + svc.ServiceType + " | `" +
+			svc.PkgPath + "` | `" + string(svc.Owner) + "` | " + desc + " |\n")
 	}
 
 	b.WriteString("\n")
 	return b.String()
-}
-
-// ---------- helpers ----------
-
-func mustGet(name string) *Service {
-	svc, ok := services[name]
-	if !ok {
-		panic("service not found: " + name)
-	}
-	return svc
-}
-
-func isValidName(name string) bool {
-	for _, c := range name {
-		if !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_') {
-			return false
-		}
-	}
-	return true
 }

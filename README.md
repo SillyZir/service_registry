@@ -15,7 +15,7 @@ Every project maintains its own documentation, its own README, its own "list of 
 `service_registry` is a shared realm where developers register their contracts with a name, type, description, and optional metadata. Any realm, frontend, or tool can query the registry to discover what services are available and how to integrate with them.
 
 ```
-RegisterService(cross, "my_token", "ERC20-style fungible token on Gno", "token", "symbol=GNT,decimals=6")
+RegisterService(cross, "my_token", "gno.land/r/demo/my_token", "ERC20-style fungible token on Gno", "token", "symbol=GNT,decimals=6")
 ```
 
 Once registered, the service is discoverable:
@@ -41,10 +41,11 @@ Without a registry, the ecosystem is a dark forest where every contract is invis
 Services are stored in a map keyed by a unique lowercase name. Each entry has:
 
 - **Name** — unique identifier (lowercase alphanumeric + underscores)
-- **Owner** — the address that registered it (determined by `std.PreviousRealm()`, not a parameter)
+- **Owner** — the address that registered it (determined by `runtime.PreviousRealm()`, not a parameter)
 - **Type** — category string (e.g., `"token"`, `"dex"`, `"oracle"`, `"dao"`, `"nft"`)
 - **Description** — what the service does
-- **Metadata** — freeform string for additional context (addresses, symbols, config)
+- **PkgPath** — the realm the service lives at (`gno.land/...`) — resolve it with `Resolve(name)`
+- **Metadata** — freeform string for additional context (symbols, config)
 
 Only the owner can update or deregister their service. Ownership can be transferred.
 
@@ -53,13 +54,13 @@ Only the owner can update or deregister their service. Ownership can be transfer
 ### Register
 
 ```
-RegisterService(cross, "gnot_swap", "AMM DEX for GNOT pairs", "dex", "router=g1abc...,fee=30bp")
+RegisterService(cross, "gnot_swap", "gno.land/r/demo/gnot_swap", "AMM DEX for GNOT pairs", "dex", "router=g1abc...,fee=30bp")
 ```
 
 ### Update
 
 ```
-UpdateService(cross, "gnot_swap", "AMM DEX for GNOT and GRC20 pairs", "dex", "router=g1abc...,fee=25bp")
+UpdateService(cross, "gnot_swap", "gno.land/r/demo/gnot_swap", "AMM DEX for GNOT and GRC20 pairs", "dex", "router=g1abc...,fee=25bp")
 ```
 
 ### Query
@@ -92,6 +93,10 @@ TransferOwnership(cross, "gnot_swap", g1new_owner...)
 Deregister(cross, "gnot_swap")
 ```
 
+The name stays reserved for its former owner: nobody else can re-register
+it, so integrators who still resolve the name can never be redirected by
+a squatter.
+
 ## Integrating from another realm
 
 ```go
@@ -111,7 +116,7 @@ func FindOracle() string {
 
 | Function | Access | Description |
 |----------|--------|-------------|
-| `RegisterService(cross, name, desc, type, meta)` | Anyone | Register a service. Caller becomes owner. |
+| `RegisterService(cross, name, pkgpath, desc, type, meta)` | Anyone | Register a service. Caller becomes owner. Deregistered names stay reserved for their former owner. |
 | `UpdateService(cross, name, desc, type, meta)` | Owner | Update description, type, and metadata. |
 | `TransferOwnership(cross, name, newOwner)` | Owner | Hand off control. |
 | `Deregister(cross, name)` | Owner | Remove permanently. |
